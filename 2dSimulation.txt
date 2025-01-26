@@ -1,0 +1,711 @@
+import pygame
+import random
+import csv
+from queue import PriorityQueue
+from datetime import datetime, timedelta
+import threading
+import time
+
+# Initialize Pygame
+pygame.init()
+pygame.font.init()
+
+# Constants
+GRID_SIZE = 20
+CELL_SIZE = 800 // GRID_SIZE
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
+YELLOW = (255, 255, 0)
+GRAY = (128, 128, 128)
+BUILDING_COLOR = (139, 69, 19)  # Brown color for buildings
+
+# Building Types
+EMPTY = 0
+HOSPITAL = 1
+BUILDING = 2
+DRONE = 3
+
+class SupplyChainSim:
+    def __init__(self):
+        # Initialize pygame and font system
+        pygame.init()
+        pygame.font.init()
+        self.font = pygame.font.SysFont('Arial', 24)
+        
+        # Get screen info for proper sizing
+        screen_info = pygame.display.Info()
+        available_height = screen_info.current_h - 100  # Account for taskbar and margins
+        available_width = screen_info.current_w - 100   # Leave margins on sides
+        
+        # Calculate window size to fit screen
+        self.WINDOW_SIZE = min(800, available_width, available_height - 100)  # Square grid area
+        self.TOTAL_HEIGHT = self.WINDOW_SIZE + 80  # More space for buttons
+        
+        # Set up display with resizable flag
+        self.screen = pygame.display.set_mode(
+            (self.WINDOW_SIZE, self.TOTAL_HEIGHT),
+            pygame.RESIZABLE
+        )
+        pygame.display.set_caption("Medical Supply Chain Simulation")
+        
+        # Store initial window size
+        self.current_width = self.WINDOW_SIZE
+        self.current_height = self.TOTAL_HEIGHT
+        
+        # Grid setup
+        self.grid = [[EMPTY for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+        self.hospitals = {}  # (x,y): hospital_id
+        self.buildings = set()  # Set of (x,y) coordinates
+        self.drones = []  # List of active drones
+        
+        # Simulation states
+        self.edit_mode = True  # Start in edit mode
+        self.simulation_running = False
+        self.selected_type = None  # HOSPITAL, BUILDING, or REMOTE
+        
+        # UI elements
+        self.setup_ui()
+        
+        # Alert system
+        self.alert_file = "transplant_alerts.csv"
+        self.create_alert_file()
+        self.alert_thread = None
+        
+        self.running = True
+        
+        # Add moving obstacles
+        self.moving_obstacles = []
+        self.obstacle_spawn_timer = 0
+        self.obstacle_spawn_interval = 5  # Faster spawning
+        self.obstacle_move_timer = 0
+        self.obstacle_move_interval = 8  # Faster movement
+        self.max_obstacles = 600  # Even more maximum obstacles
+        
+        # Track which hospitals have active drones
+        self.active_hospital_drones = set()  # Set of hospital IDs with active drones
+        
+        # Adjust movement timing controls for better visibility
+        self.drone_move_timer = 0
+        self.drone_base_interval = 2    # Decreased from 5 for much faster base speed
+        self.drone_fast_interval = 1    # Decreased from 3 for very fast clear path speed
+        self.drone_slow_interval = 4    # Decreased from 8 for faster obstacle avoidance
+        self.drone_move_interval = self.drone_base_interval
+        
+        # Add remote location tracking
+        self.remote_locations = {}  # (x,y): remote_id
+        self.remote_counter = 1
+
+    def setup_ui(self):
+        # Create UI buttons
+        button_height = 50
+        button_width = (self.WINDOW_SIZE - 70) // 6  # 6 buttons with spacing
+        spacing = 10
+        bottom_margin = 20
+        
+        # Position buttons at the bottom
+        button_y = self.WINDOW_SIZE + bottom_margin
+        
+        self.buttons = {
+            'hospital': pygame.Rect(spacing, button_y, button_width, button_height),
+            'building': pygame.Rect(button_width + 2*spacing, button_y, button_width, button_height),
+            'remote': pygame.Rect(2*button_width + 3*spacing, button_y, button_width, button_height),
+            'start': pygame.Rect(3*button_width + 4*spacing, button_y, button_width, button_height),
+            'stop': pygame.Rect(4*button_width + 5*spacing, button_y, button_width, button_height),
+            'clear': pygame.Rect(5*button_width + 6*spacing, button_y, button_width, button_height)
+        }
+        
+        # Create button labels
+        self.button_labels = {
+            'hospital': self.font.render('Hospital', True, BLACK),
+            'building': self.font.render('Building', True, BLACK),
+            'remote': self.font.render('Remote', True, BLACK),
+            'start': self.font.render('Start', True, BLACK),
+            'stop': self.font.render('Stop', True, BLACK),
+            'clear': self.font.render('Clear', True, BLACK)
+        }
+
+    def create_alert_file(self):
+        # Create or clear the alert file with headers
+        with open(self.alert_file, 'w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(['ID', 'Timestamp', 'TransplantType', 'Origin', 'Destination', 'Status'])
+
+    def generate_alerts(self):
+        alert_id = 1
+        while self.simulation_running:
+            if len(self.hospitals) >= 2:
+                available_hospitals = [h_id for h_id in self.hospitals.values() 
+                                    if h_id not in self.active_hospital_drones]
+                
+                if available_hospitals:
+                    origin = random.choice(available_hospitals)
+                    destination = random.choice([h for h in self.hospitals.values() 
+                                              if h != origin])
+                    
+                    with open(self.alert_file, 'a', newline='') as file:
+                        writer = csv.writer(file)
+                        writer.writerow([
+                            f'T{alert_id:04d}',
+                            datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                            random.choice(['Heart', 'Kidney', 'Liver', 'Lung']),
+                            origin,
+                            destination,
+                            'In Progress'
+                        ])
+                    alert_id += 1
+                    self.active_hospital_drones.add(origin)
+                
+                time.sleep(random.randint(2, 5))  # Increased frequency (was 5,15)
+
+    def process_alerts(self):
+        with open(self.alert_file, 'r') as file:
+            reader = csv.DictReader(file)
+            alerts = list(reader)
+            
+        # Process only new alerts that are in progress
+        for alert in alerts:
+            if (not any(d['id'] == alert['ID'] for d in self.drones) and 
+                alert['Status'] == 'In Progress'):
+                # Get origin coordinates (always a hospital)
+                origin_coords = next(coords for coords, id in self.hospitals.items() 
+                                  if id == alert['Origin'])
+                
+                # Get destination coordinates (could be hospital or remote location)
+                if alert['Destination'].startswith('R'):  # Remote location
+                    dest_coords = next(coords for coords, id in self.remote_locations.items() 
+                                    if id == alert['Destination'])
+                else:  # Hospital destination
+                    dest_coords = next(coords for coords, id in self.hospitals.items() 
+                                    if id == alert['Destination'])
+                
+                # Create new drone
+                self.drones.append({
+                    'id': alert['ID'],
+                    'pos': origin_coords,
+                    'origin_hospital': alert['Origin'],
+                    'destination': dest_coords,
+                    'path': self.find_path(origin_coords, dest_coords),
+                    'type': alert['TransplantType']
+                })
+
+    def check_obstacle_proximity(self, pos, radius=4):  # Increased detection radius
+        """Check for nearby obstacles and predict their movement"""
+        x, y = pos
+        nearby_count = 0
+        for obstacle in self.moving_obstacles:
+            obs_x, obs_y = map(int, obstacle['pos'])
+            dx, dy = obstacle['direction']
+            
+            # Check current position
+            if abs(obs_x - x) <= radius and abs(obs_y - y) <= radius:
+                nearby_count += 1
+            
+            # Predict next position
+            next_x = obs_x + dx
+            next_y = obs_y + dy
+            if abs(next_x - x) <= radius and abs(next_y - y) <= radius:
+                nearby_count += 1
+                
+        return nearby_count
+
+    def update_drones(self):
+        self.drone_move_timer += 1
+        
+        for drone in self.drones[:]:
+            # Adjust speed based on obstacle proximity
+            nearby_obstacles = self.check_obstacle_proximity(drone['pos'])
+            if nearby_obstacles == 0:
+                self.drone_move_interval = self.drone_fast_interval
+            elif nearby_obstacles > 2:
+                # Recalculate path immediately when too many obstacles nearby
+                new_path = self.find_safe_path(drone['pos'], drone['destination'])
+                if new_path:
+                    drone['path'] = new_path
+                self.drone_move_interval = self.drone_slow_interval
+            else:
+                self.drone_move_interval = self.drone_base_interval
+            
+            if self.drone_move_timer < self.drone_move_interval:
+                continue
+            
+            if drone['path']:
+                next_pos = drone['path'][0]
+                current_x, current_y = drone['pos']
+                next_x, next_y = next_pos
+                
+                # Check if path is blocked by moving obstacle
+                path_blocked = False
+                for obstacle in self.moving_obstacles:
+                    obs_x, obs_y = map(int, obstacle['pos'])
+                    dx, dy = obstacle['direction']
+                    next_obs_x, next_obs_y = obs_x + dx, obs_y + dy
+                    
+                    if (obs_x, obs_y) == next_pos or (next_obs_x, next_obs_y) == next_pos:
+                        path_blocked = True
+                        break
+                
+                if path_blocked:
+                    # Find new safe path
+                    new_path = self.find_safe_path(drone['pos'], drone['destination'])
+                    if new_path:
+                        drone['path'] = new_path
+                    continue
+                
+                # Move along path
+                dx = max(-1, min(1, next_x - current_x))
+                dy = max(-1, min(1, next_y - current_y))
+                new_pos = (current_x + dx, current_y + dy)
+                
+                if self.is_valid_move(next_x, next_y):
+                    drone['pos'] = new_pos
+                    if new_pos == next_pos:
+                        drone['path'].pop(0)
+                    
+                    if drone['pos'] == drone['destination']:
+                        self.update_alert_status(drone['id'], 'Completed')
+                        self.active_hospital_drones.remove(drone['origin_hospital'])
+                        self.drones.remove(drone)
+                else:
+                    # Find new safe path if current move is invalid
+                    new_path = self.find_safe_path(drone['pos'], drone['destination'])
+                    if new_path:
+                        drone['path'] = new_path
+        
+        if self.drone_move_timer >= self.drone_move_interval:
+            self.drone_move_timer = 0
+
+    def update_alert_status(self, alert_id, status):
+        # Read all alerts
+        with open(self.alert_file, 'r') as file:
+            reader = csv.reader(file)
+            headers = next(reader)
+            alerts = list(reader)
+        
+        # Update status for matching alert
+        for alert in alerts:
+            if alert[0] == alert_id:
+                alert[5] = status
+        
+        # Write back to file
+        with open(self.alert_file, 'w', newline='') as file:
+            writer = csv.writer(file)
+            writer.writerow(headers)
+            writer.writerows(alerts)
+
+    def find_path(self, start, end):
+        """A* pathfinding implementation"""
+        frontier = PriorityQueue()
+        frontier.put((0, start))
+        came_from = {start: None}
+        cost_so_far = {start: 0}
+
+        while not frontier.empty():
+            current = frontier.get()[1]
+
+            if current == end:
+                break
+
+            for next_pos in self.get_neighbors(current):
+                new_cost = cost_so_far[current] + 1
+                if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
+                    cost_so_far[next_pos] = new_cost
+                    priority = new_cost + self.heuristic(end, next_pos)
+                    frontier.put((priority, next_pos))
+                    came_from[next_pos] = current
+
+        # Reconstruct path
+        if end not in came_from:
+            return []
+            
+        path = []
+        current = end
+        while current != start:
+            path.append(current)
+            current = came_from[current]
+        path.reverse()
+        return path
+
+    def get_neighbors(self, pos):
+        """Get valid neighboring positions"""
+        neighbors = []
+        for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:  # 4-directional movement
+            new_x, new_y = pos[0] + dx, pos[1] + dy
+            if self.is_valid_move(new_x, new_y):
+                neighbors.append((new_x, new_y))
+        return neighbors
+
+    def heuristic(self, a, b):
+        """Manhattan distance heuristic"""
+        return abs(a[0] - b[0]) + abs(a[1] - b[1])
+
+    def handle_click(self, pos):
+        # Only process clicks within the grid area
+        if pos[1] >= self.WINDOW_SIZE:
+            return
+            
+        cell_size = self.WINDOW_SIZE // GRID_SIZE
+        x, y = pos[0] // cell_size, pos[1] // cell_size
+        
+        if 0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE:
+            # Handle remote placement during simulation
+            if self.selected_type == 'remote' and self.simulation_running:
+                if self.grid[y][x] == EMPTY:
+                    remote_id = f"R{self.remote_counter}"
+                    self.remote_locations[(x, y)] = remote_id
+                    self.grid[y][x] = HOSPITAL  # Use hospital type for pathfinding
+                    self.remote_counter += 1
+                    
+                    # Generate manual alert from random hospital to remote location
+                    self.generate_manual_alert((x, y), remote_id)
+            
+            # Handle building/hospital placement in edit mode
+            elif self.edit_mode and self.selected_type in ['hospital', 'building']:
+                if self.grid[y][x] == EMPTY:
+                    if self.selected_type == 'hospital':
+                        hospital_id = f"H{len(self.hospitals) + 1}"
+                        self.hospitals[(x, y)] = hospital_id
+                        self.grid[y][x] = HOSPITAL
+                    elif self.selected_type == 'building':
+                        self.buildings.add((x, y))
+                        self.grid[y][x] = BUILDING
+
+    def generate_manual_alert(self, remote_pos, remote_id):
+        # Select random hospital as origin
+        if self.hospitals:
+            available_hospitals = [h_id for h_id in self.hospitals.values() 
+                                if h_id not in self.active_hospital_drones]
+            if available_hospitals:
+                origin = random.choice(available_hospitals)
+                
+                with open(self.alert_file, 'a', newline='') as file:
+                    writer = csv.writer(file)
+                    writer.writerow([
+                        f'M{self.remote_counter:04d}',  # Manual alert ID
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        'Manual',  # Manual transplant type
+                        origin,
+                        remote_id,
+                        'In Progress'
+                    ])
+                self.active_hospital_drones.add(origin)
+
+    def draw(self):
+        self.screen.fill(WHITE)
+        
+        # Calculate cell size based on window size
+        cell_size = self.WINDOW_SIZE // GRID_SIZE
+        
+        # Draw grid
+        for y in range(GRID_SIZE):
+            for x in range(GRID_SIZE):
+                rect = pygame.Rect(x * cell_size, y * cell_size, cell_size, cell_size)
+                pygame.draw.rect(self.screen, BLACK, rect, 1)
+                
+                # Draw buildings/hospitals/remote locations
+                if self.grid[y][x] == HOSPITAL:
+                    if (x, y) in self.remote_locations:
+                        # Draw remote locations in a different color (e.g., yellow)
+                        pygame.draw.rect(self.screen, YELLOW, rect)
+                    else:
+                        pygame.draw.rect(self.screen, GREEN, rect)
+                elif self.grid[y][x] == BUILDING:
+                    pygame.draw.rect(self.screen, BUILDING_COLOR, rect)
+        
+        # Draw active paths and drones with semi-transparent paths
+        for drone in self.drones:
+            # Draw full path as semi-transparent grey squares
+            if drone['path']:
+                path_surface = pygame.Surface((self.WINDOW_SIZE, self.WINDOW_SIZE), pygame.SRCALPHA)
+                for path_pos in drone['path']:
+                    x, y = path_pos
+                    rect = pygame.Rect(x * cell_size, y * cell_size, cell_size, cell_size)
+                    pygame.draw.rect(path_surface, (*GRAY, 128), rect)  # 128 is alpha value (semi-transparent)
+                self.screen.blit(path_surface, (0, 0))
+            
+            # Draw drone
+            x, y = drone['pos']
+            rect = pygame.Rect(x * cell_size, y * cell_size, cell_size, cell_size)
+            pygame.draw.rect(self.screen, RED, rect)
+        
+        # Draw moving obstacles (ensure grid alignment)
+        for obstacle in self.moving_obstacles:
+            x, y = map(int, obstacle['pos'])
+            rect = pygame.Rect(x * self.WINDOW_SIZE // GRID_SIZE, 
+                             y * self.WINDOW_SIZE // GRID_SIZE, 
+                             self.WINDOW_SIZE // GRID_SIZE, 
+                             self.WINDOW_SIZE // GRID_SIZE)
+            
+            # Draw obstacle with transparency if over hospital
+            if obstacle['transparent']:
+                obstacle_surface = pygame.Surface((self.WINDOW_SIZE // GRID_SIZE, 
+                                                 self.WINDOW_SIZE // GRID_SIZE), 
+                                                pygame.SRCALPHA)
+                pygame.draw.rect(obstacle_surface, (*BLUE, 128), 
+                               obstacle_surface.get_rect())  # Semi-transparent
+                self.screen.blit(obstacle_surface, rect)
+            else:
+                pygame.draw.rect(self.screen, BLUE, rect)
+        
+        # Draw UI buttons with labels
+        for name, rect in self.buttons.items():
+            color = YELLOW if self.selected_type == name else GRAY
+            pygame.draw.rect(self.screen, color, rect)
+            
+            # Draw button label
+            label = self.button_labels[name]
+            label_rect = label.get_rect(center=rect.center)
+            self.screen.blit(label, label_rect)
+
+        pygame.display.flip()
+
+    def handle_resize(self, new_size):
+        # Update window dimensions
+        self.current_width = new_size[0]
+        self.current_height = new_size[1]
+        
+        # Maintain minimum size
+        if self.current_width < 400:
+            self.current_width = 400
+        if self.current_height < 480:
+            self.current_height = 480
+        
+        # Update window size
+        self.WINDOW_SIZE = min(self.current_width, self.current_height - 80)
+        self.TOTAL_HEIGHT = self.WINDOW_SIZE + 80
+        
+        # Resize display
+        self.screen = pygame.display.set_mode(
+            (self.current_width, self.current_height),
+            pygame.RESIZABLE
+        )
+        
+        # Recalculate UI elements
+        self.setup_ui()
+
+    def run(self):
+        clock = pygame.time.Clock()
+        
+        while self.running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    self.running = False
+                
+                elif event.type == pygame.VIDEORESIZE:
+                    self.handle_resize(event.size)
+                
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    mouse_pos = pygame.mouse.get_pos()
+                    
+                    # Check button clicks
+                    for name, rect in self.buttons.items():
+                        if rect.collidepoint(mouse_pos):
+                            if name in ['hospital', 'building', 'remote']:
+                                self.selected_type = name
+                            elif name == 'start' and self.edit_mode:
+                                self.handle_simulation_start()
+                            elif name == 'stop':
+                                self.simulation_running = False
+                                self.edit_mode = True
+                                if self.alert_thread:
+                                    self.alert_thread.join()
+                            elif name == 'clear':
+                                self.clear_simulation()
+                    
+                    # Handle grid clicks (both edit mode and remote placement)
+                    if mouse_pos[1] < self.WINDOW_SIZE:  # Click is in grid area
+                        self.handle_click(mouse_pos)
+            
+            # Update simulation
+            if self.simulation_running:
+                self.process_alerts()
+                self.update_drones()
+                self.update_moving_obstacles()
+            
+            self.draw()
+            clock.tick(30)  # Adjusted speed
+
+        pygame.quit()
+
+    def spawn_moving_obstacle(self):
+        # Spawn from edges with random direction
+        if random.random() < 0.5:
+            # Spawn from left/right
+            x = random.choice([0, GRID_SIZE-1])
+            y = random.randint(0, GRID_SIZE-1)
+            dx = 1 if x == 0 else -1
+            dy = 0
+        else:
+            # Spawn from top/bottom
+            x = random.randint(0, GRID_SIZE-1)
+            y = random.choice([0, GRID_SIZE-1])
+            dx = 0
+            dy = 1 if y == 0 else -1
+            
+        self.moving_obstacles.append({
+            'pos': (x, y),
+            'direction': (dx, dy),
+            'transparent': False  # Add transparency flag
+        })
+
+    def update_moving_obstacles(self):
+        self.obstacle_move_timer += 1
+        if self.obstacle_move_timer < self.obstacle_move_interval:
+            return
+            
+        self.obstacle_move_timer = 0
+        
+        # Spawn new obstacles very frequently
+        self.obstacle_spawn_timer += 1
+        if self.obstacle_spawn_timer >= self.obstacle_spawn_interval:
+            for _ in range(8):  # Spawn even more obstacles at once
+                self.spawn_moving_obstacle()
+            self.obstacle_spawn_timer = 0
+        
+        # Update existing obstacles
+        for obstacle in self.moving_obstacles[:]:
+            x, y = map(int, obstacle['pos'])
+            dx, dy = obstacle['direction']
+            
+            # Randomly change direction occasionally (20% chance)
+            if random.random() < 0.2:
+                if random.random() < 0.5:
+                    dx = random.choice([-1, 1])
+                    dy = 0
+                else:
+                    dx = 0
+                    dy = random.choice([-1, 1])
+                obstacle['direction'] = (dx, dy)
+            
+            new_x = x + dx
+            new_y = y + dy
+            
+            # Only remove if completely out of bounds
+            if not (0 <= new_x < GRID_SIZE and 0 <= new_y < GRID_SIZE):
+                self.moving_obstacles.remove(obstacle)
+                continue
+            
+            # Update position - allow passing through hospitals
+            obstacle['pos'] = (new_x, new_y)
+            
+            # If passing through a hospital, draw obstacle slightly transparent
+            if self.grid[new_y][new_x] == HOSPITAL:
+                obstacle['transparent'] = True
+            else:
+                obstacle['transparent'] = False
+
+    def handle_simulation_start(self):
+        # Clear any existing data
+        self.drones = []
+        self.active_hospital_drones.clear()
+        self.create_alert_file()
+        
+        self.edit_mode = False
+        self.simulation_running = True
+        
+        # Adjust initial obstacle settings
+        self.moving_obstacles = []
+        self.obstacle_spawn_timer = 0
+        self.obstacle_spawn_interval = 5  # Faster spawning
+        
+        # Start with even more obstacles
+        for _ in range(60):  # Start with more initial obstacles
+            self.spawn_moving_obstacle()
+        
+        # Reset movement timers
+        self.drone_move_timer = 0
+        self.obstacle_move_timer = 0
+        
+        # Start alert generation
+        self.alert_thread = threading.Thread(target=self.generate_alerts)
+        self.alert_thread.start()
+
+    def clear_simulation(self):
+        # Stop simulation if running
+        self.simulation_running = False
+        if self.alert_thread and self.alert_thread.is_alive():
+            self.alert_thread.join()
+        
+        # Clear grid
+        self.grid = [[EMPTY for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+        
+        # Clear all collections
+        self.hospitals.clear()
+        self.buildings.clear()
+        self.drones.clear()
+        self.moving_obstacles.clear()
+        self.active_hospital_drones.clear()
+        
+        # Reset states
+        self.edit_mode = True
+        self.selected_type = None
+        
+        # Clear CSV file
+        self.create_alert_file()
+        
+        # Clear remote locations
+        self.remote_locations.clear()
+        self.remote_counter = 1
+
+    def is_valid_move(self, x, y):
+        """Check if a position is valid for drone movement"""
+        if not (0 <= x < GRID_SIZE and 0 <= y < GRID_SIZE):
+            return False
+        
+        # Check for buildings
+        if self.grid[y][x] == BUILDING:
+            return False
+        
+        # Check for moving obstacles
+        for obstacle in self.moving_obstacles:
+            obs_x, obs_y = map(int, obstacle['pos'])
+            if (obs_x, obs_y) == (x, y):
+                return False
+        
+        # Check for other drones
+        for other_drone in self.drones:
+            if other_drone['pos'] == (x, y):
+                return False
+        
+        return True
+
+    def find_safe_path(self, start, end):
+        """Find path avoiding predicted obstacle positions"""
+        frontier = PriorityQueue()
+        frontier.put((0, start))
+        came_from = {start: None}
+        cost_so_far = {start: 0}
+
+        while not frontier.empty():
+            current = frontier.get()[1]
+
+            if current == end:
+                break
+
+            for next_pos in self.get_neighbors(current):
+                # Add extra cost for positions near obstacles
+                obstacle_cost = self.check_obstacle_proximity(next_pos, radius=3) * 2
+                new_cost = cost_so_far[current] + 1 + obstacle_cost
+                
+                if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
+                    cost_so_far[next_pos] = new_cost
+                    priority = new_cost + self.heuristic(end, next_pos)
+                    frontier.put((priority, next_pos))
+                    came_from[next_pos] = current
+
+        if end not in came_from:
+            return []
+            
+        path = []
+        current = end
+        while current != start:
+            path.append(current)
+            current = came_from[current]
+        path.reverse()
+        return path
+
+if __name__ == "__main__":
+    sim = SupplyChainSim()
+    sim.run() 
