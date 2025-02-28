@@ -71,12 +71,19 @@ _Adaptive pathfinding under dynamic constraints_ (moving obstacles, weather patt
 
 ---
 
-## 📊 Performance Metrics
-| Metric               | This System | Ambulances | Improvement |
-|----------------------|-------------|------------|-------------|
-| Avg. Response Time   | 8.2 min     | 19.7 min   | 58.4% ↓     |
-| Cost/Mile            | $0.18       | $2.75      | 93.5% ↓     |
-| Obstacle Avoidance   | 99.1%       | N/A        | -           |
+## 💰 Cost-Benefit Overview
+
+Below is a comparison of the **old helicopter/ground‐based system** and our **new drone/eVTOL approach**, highlighting significant cost and operational benefits:
+
+| Category                  | Old System (Helicopter/Ground)                    | New System (Drone/eVTOL)              | Savings / Impact                          |
+|---------------------------|---------------------------------------------------|---------------------------------------|-------------------------------------------|
+| **Transport Costs**       | \$5,000–\$20,000 per trip (helicopter)           | \$1,000–\$4,000 per trip              | 30–50% cost savings                       |
+| **Operational Costs**     | High fuel costs, pilot salaries, helicopter maintenance | Lower electricity costs, fewer staff required | 40–60% reduction in operating expenses    |
+| **Infrastructure Costs**  | Helipads and maintenance facilities required      | Small landing zones + charging stations | 50–70% lower infra costs                  |
+| **Lost Organs (Discard)** | 10–25% wasted due to delays (~\$36k per organ)    | 5–15% discard due to faster delivery   | Potentially \$1M+ saved annually           |
+| **Carbon Emissions**      | High emissions from helicopters/ambulances        | Electric‐powered, 30–50% reduction     | Significant positive environmental impact |
+
+In addition to reducing response times, **our drone/eVTOL system** lowers the total cost of transport and operations, cuts down on the need for large-scale infrastructure (helipads), and dramatically reduces lost organs due to delivery delays. The environmental footprint improves as well, given the shift to electric‐powered UAVs.
 
 ---
 
