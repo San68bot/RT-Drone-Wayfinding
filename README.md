@@ -6,6 +6,8 @@
 
 A real-time multi-agent coordination system for UAVs delivering critical medical supplies, designed to replace conventional ambulance/helicopter networks. Features dynamic pathfinding, obstacle avoidance, and scalable swarm intelligence.
 
+[View the Project Proposal Presentation](https://www.canva.com/design/DAGgZz3U0-4/2R7B8GwpLY0ZzUkNbvkA_A/view?utm_content=DAGgZz3U0-4&utm_campaign=designshare&utm_medium=link2&utm_source=uniquelinks&utlId=he8c88d8d04)
+
 ---
 
 ## 🚁 Overview
